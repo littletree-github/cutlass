@@ -29,6 +29,7 @@
 import argparse
 from typing import Optional, Type, Tuple, Union
 import cuda.bindings.driver as cuda
+import cuda.bindings.runtime as cudart
 
 
 import cutlass
@@ -108,6 +109,28 @@ Constraints:
   Float16/BFloat16, and Int8/Uint8/Float8, respectively.
 * OOB tiles are not allowed when TMA store is disabled
 """
+
+
+def get_current_smem_capacity_in_bytes() -> int:
+    """Query the active device's opt-in shared memory capacity.
+
+    This avoids relying on the installed package's architecture lookup, which
+    currently aliases Thor (`sm_110`) to `sm_101` and then fails the SMEM
+    capacity table lookup.
+    """
+    err, device = cudart.cudaGetDevice()
+    if err != cudart.cudaError_t.cudaSuccess:
+        return utils.get_smem_capacity_in_bytes("sm_100")
+
+    err, prop = cudart.cudaGetDeviceProperties(device)
+    if err != cudart.cudaError_t.cudaSuccess:
+        return utils.get_smem_capacity_in_bytes("sm_100")
+
+    smem_capacity = getattr(prop, "sharedMemPerBlockOptin", 0)
+    if smem_capacity:
+        return smem_capacity
+
+    return utils.get_smem_capacity_in_bytes("sm_100")
 
 
 class DenseGemmKernel:
@@ -275,7 +298,7 @@ class DenseGemmKernel:
         else:
             self.epi_tile = self.cta_tile_shape_mnk[:2]
 
-        self.smem_capacity = utils.get_smem_capacity_in_bytes()
+        self.smem_capacity = get_current_smem_capacity_in_bytes()
 
         # Setup A/B/C stage count in shared memory
         self.num_acc_stage, self.num_ab_stage, self.num_c_stage = self._compute_stages(

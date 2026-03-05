@@ -30,6 +30,7 @@ import argparse
 from typing import Optional, Tuple, Type, Union
 from functools import lru_cache
 import cuda.bindings.driver as cuda
+import cuda.bindings.runtime as cudart
 
 import cutlass
 import cutlass.cute as cute
@@ -106,6 +107,23 @@ Constraints are same as dense_gemm.py:
   Float16/BFloat16, and Int8/Uint8/Float8, respectively.
 * OOB tiles are not allowed when TMA store is disabled
 """
+
+
+def get_current_smem_capacity_in_bytes() -> int:
+    """Query the active device's opt-in shared memory capacity."""
+    err, device = cudart.cudaGetDevice()
+    if err != cudart.cudaError_t.cudaSuccess:
+        return utils.get_smem_capacity_in_bytes("sm_100")
+
+    err, prop = cudart.cudaGetDeviceProperties(device)
+    if err != cudart.cudaError_t.cudaSuccess:
+        return utils.get_smem_capacity_in_bytes("sm_100")
+
+    smem_capacity = getattr(prop, "sharedMemPerBlockOptin", 0)
+    if smem_capacity:
+        return smem_capacity
+
+    return utils.get_smem_capacity_in_bytes("sm_100")
 
 
 def _compute_stages(
@@ -370,7 +388,7 @@ class PersistentDenseGemmKernel:
                 self.c_dtype, self.c_layout, self.epi_tile, 1
             )
 
-        self.smem_capacity = utils.get_smem_capacity_in_bytes()
+        self.smem_capacity = get_current_smem_capacity_in_bytes()
 
         # Setup A/B/C stage count in shared memory and ACC stage count in tensor memory
         self.num_acc_stage, self.num_ab_stage, self.num_c_stage = _compute_stages(
