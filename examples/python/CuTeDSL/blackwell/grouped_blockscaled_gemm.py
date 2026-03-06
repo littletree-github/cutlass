@@ -37,6 +37,8 @@ import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 from cutlass.cute.nvgpu import cpasync, tcgen05
+import cutlass.cute.nvgpu.tcgen05.copy as tcgen05_copy
+import cutlass.cute.nvgpu.tcgen05.mma as tcgen05_mma
 import cutlass.torch as cutlass_torch
 import cutlass.utils as utils
 import cutlass.pipeline as pipeline
@@ -44,6 +46,9 @@ from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
 import cutlass.utils.blackwell_helpers as sm100_utils
 import cutlass.utils.blockscaled_layout as blockscaled_utils
 from cutlass.cute.runtime import from_dlpack
+from cutlass.base_dsl.arch import Arch
+from cutlass.base_dsl.dsl import BaseDSL
+from cutlass.cute.nvgpu.common import OpError
 
 """
 This example provides an experimental implementation of the SM100 grouped blockscaled GEMM kernel, please note that the APIs and implementation details related to this kernel may change in future releases.
@@ -99,6 +104,45 @@ Constraints:
 * The contiguous dimension of A/B/C tensors in each group must be at least 16 bytes aligned,
   i.e, number of elements is a multiple of 16 and 32 for Float8 and Float4, respectively.
 """
+
+
+def _enable_thor_blockscaled_tcgen05_compat() -> None:
+    """Accept Thor's SM101 alias for blockscaled tcgen05 ops in older DSL packages."""
+
+    arch = BaseDSL._get_dsl().get_arch_enum()
+    if arch not in {Arch.sm_101a, Arch.sm_101f, Arch.sm_110a, Arch.sm_110f}:
+        return
+
+    admissible_archs = Arch.filter(
+        lambda candidate: candidate.is_family_of(Arch.sm_100f)
+        or candidate.is_family_of(Arch.sm_110f)
+    )
+    tcgen05_mma.BlockScaledMmaOp.admissible_archs = admissible_archs
+
+    if getattr(tcgen05_copy._S2TCopyBase, "_thor_compat_enabled", False):
+        return
+
+    def _thor_compatible_post_init(self) -> None:
+        arch = BaseDSL._get_dsl().get_arch_enum()
+        if not (
+            arch.is_family_of(Arch.sm_100f) or arch.is_family_of(Arch.sm_110f)
+        ):
+            raise OpError(
+                self,
+                f"expects arch to be one of {admissible_archs}, but got {arch}",
+                suggestion="Ensure env CUTE_DSL_ARCH matches your GPU architecture",
+            )
+        if not isinstance(self.cta_group, tcgen05.CtaGroup):
+            raise OpError(
+                self,
+                "expects the 'cta_group' Op parameter to be a tcgen05.CtaGroup instance",
+            )
+
+    tcgen05_copy._S2TCopyBase.__post_init__ = _thor_compatible_post_init
+    tcgen05_copy._S2TCopyBase._thor_compat_enabled = True
+
+
+_enable_thor_blockscaled_tcgen05_compat()
 
 
 class Sm100GroupedBlockScaledGemmKernel:
