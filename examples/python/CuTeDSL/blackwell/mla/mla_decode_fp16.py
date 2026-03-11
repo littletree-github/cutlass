@@ -1469,16 +1469,17 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
             # elem_per_thread is a dynamic value depends on the page_size setting.
             for i in range(elem_per_thread):
                 idx = i * self.threads_per_warp + tidx
-                if cute.elem_less(
-                    k_index * page_per_tile + idx, mPT.shape[0]
-                ) and cute.elem_less(idx, page_per_tile):
-                    cute.copy(
-                        atom_async_copy,
-                        mPT_for_copy[None, k_index * page_per_tile + idx],
-                        sPT_for_copy[None, idx, load_pt_producer_state.index],
-                    )
-                else:
-                    sPT_for_copy[None, idx, load_pt_producer_state.index].fill(0)
+                if cute.elem_less(idx, page_per_tile):
+                    if cute.elem_less(k_index * page_per_tile + idx, mPT.shape[0]):
+                        cute.copy(
+                            atom_async_copy,
+                            mPT_for_copy[None, k_index * page_per_tile + idx],
+                            sPT_for_copy[None, idx, load_pt_producer_state.index],
+                        )
+                    else:
+                        sPT_for_copy[
+                            None, idx, load_pt_producer_state.index
+                        ].fill(0)
             mbar_ptr = load_pt_pipeline.producer_get_barrier(load_pt_producer_state)
             load_pt_pipeline.producer_commit(load_pt_producer_state)
             load_pt_producer_state.advance()
@@ -3578,6 +3579,13 @@ def run(
     # Prepare pytorch tensors: Q, K, V (random from 0 to 2) and O (all zero)
     if not torch.cuda.is_available():
         raise RuntimeError("GPU is required to run this example!")
+    device_name = torch.cuda.get_device_name(0)
+    device_cc = torch.cuda.get_device_capability(0)
+    if device_cc[0] != 10:
+        raise RuntimeError(
+            "This example targets NVIDIA Blackwell SM100 (compute capability 10.x), "
+            f"but the current GPU is {device_name} (compute capability {device_cc[0]}.{device_cc[1]})."
+        )
 
     if not BlackwellMultiHeadLatentAttentionForwardFP16.can_implement(
         batch_size,
